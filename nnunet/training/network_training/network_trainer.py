@@ -95,6 +95,7 @@ class NetworkTrainer(object):
         self.train_loss_MA_alpha = 0.93  # alpha * old + (1-alpha) * new
         self.train_loss_MA_eps = 5e-4  # new MA must be at least this much better (smaller)
         self.max_num_epochs = 1000
+        self.current_max_num_epochs = 1000 # for continual learning
         self.num_batches_per_epoch = 250
         self.num_val_batches_per_epoch = 50
         self.also_val_in_tr_mode = False
@@ -215,8 +216,12 @@ class NetworkTrainer(object):
             ax2.set_ylabel("evaluation metric")
             ax.legend()
             ax2.legend(loc=9)
+            # add code for continual learning
+            if not hasattr(self,'episode'):
+                fig.savefig(join(self.output_folder, "progress.png"))
+            else:
+                fig.savefig(join(self.output_folder, f"progress_episode{self.episode}.png"))
 
-            fig.savefig(join(self.output_folder, "progress.png"))
             plt.close()
         except IOError:
             self.print_to_log_file("failed to plot: ", sys.exc_info())
@@ -232,9 +237,16 @@ class NetworkTrainer(object):
         if self.log_file is None:
             maybe_mkdir_p(self.output_folder)
             timestamp = datetime.now()
-            self.log_file = join(self.output_folder, "training_log_%d_%d_%d_%02.0d_%02.0d_%02.0d.txt" %
-                                 (timestamp.year, timestamp.month, timestamp.day, timestamp.hour, timestamp.minute,
-                                  timestamp.second))
+            if hasattr(self,'episode'):
+                self.log_file = join(self.output_folder, "training_log_episode%d_%d_%d_%d_%02.0d_%02.0d_%02.0d.txt" %
+                                     (self.episode, timestamp.year, timestamp.month, timestamp.day, timestamp.hour, timestamp.minute,
+                                      timestamp.second))
+            else:
+                self.log_file = join(self.output_folder, "training_log_%d_%d_%d_%02.0d_%02.0d_%02.0d.txt" %
+                                     (timestamp.year, timestamp.month, timestamp.day, timestamp.hour, timestamp.minute,
+                                      timestamp.second))
+
+
             with open(self.log_file, 'w') as f:
                 f.write("Starting... \n")
         successful = False
@@ -283,6 +295,21 @@ class NetworkTrainer(object):
             'best_stuff' : (self.best_epoch_based_on_MA_tr_loss, self.best_MA_tr_loss_for_patience, self.best_val_eval_criterion_MA)}
         if self.amp_grad_scaler is not None:
             save_this['amp_grad_scaler'] = self.amp_grad_scaler.state_dict()
+
+        # add for continual learning EWC
+        if hasattr(self,'fisher_dict') and self.fisher_dict is not None:
+            save_this['fisher_dict'] = self.fisher_dict
+
+        if hasattr(self,'current_trained_cls'):
+            if not isinstance(self.current_trained_cls,set):
+                self.current_trained_cls = set(self.current_trained_cls)
+            save_this['current_trained_cls'] = self.current_trained_cls
+
+        if hasattr(self,'all_val_eval_metrics_on_previous'):
+            save_this['all_val_eval_metrics_on_previous'] = self.all_val_eval_metrics_on_previous
+
+        if hasattr(self,'all_val_eval_metrics_dict'):
+            save_this['all_val_eval_metrics_on_dict'] = self.all_val_eval_metrics_dict
 
         torch.save(save_this, fname)
         self.print_to_log_file("done, saving took %.2f seconds" % (time() - start_time))
@@ -348,7 +375,7 @@ class NetworkTrainer(object):
 
         new_state_dict = OrderedDict()
         curr_state_dict_keys = list(self.network.state_dict().keys())
-        # if state dict comes from nn.DataParallel but we use non-parallel model here then the state dict keys do not
+        # if state dict comes form nn.DataParallel but we use non-parallel model here then the state dict keys do not
         # match. Use heuristic to make it match
         for k, value in checkpoint['state_dict'].items():
             key = k
@@ -383,6 +410,23 @@ class NetworkTrainer(object):
         if 'best_stuff' in checkpoint.keys():
             self.best_epoch_based_on_MA_tr_loss, self.best_MA_tr_loss_for_patience, self.best_val_eval_criterion_MA = checkpoint[
                 'best_stuff']
+
+        if 'current_trained_cls' in checkpoint.keys() and checkpoint['current_trained_cls']:
+            self.current_trained_cls = checkpoint['current_trained_cls']
+            self.current_trained_cls.update(self.classes)
+            self.print_to_log_file('Current trained cls', list(self.current_trained_cls))
+        else:
+            print('self.classes',self.classes)
+            self.current_trained_cls = set(self.classes)
+
+
+        if 'all_val_eval_metrics_on_previous' in checkpoint.keys():
+            self.all_val_eval_metrics_on_previous = checkpoint['all_val_eval_metrics_on_previous']
+            self.print_to_log_file('Previous metrics', self.all_val_eval_metrics_on_previous)
+
+        if 'all_val_eval_metrics_dict' in checkpoint.keys():
+            self.all_val_eval_metrics_dict = checkpoint['all_val_eval_metrics_dict']
+            self.print_to_log_file('All the metrics', self.all_val_eval_metrics_dict)
 
         # after the training is done, the epoch is incremented one more time in my old code. This results in
         # self.epoch = 1001 for old trained models when the epoch is actually 1000. This causes issues because
@@ -434,18 +478,18 @@ class NetworkTrainer(object):
         if not self.was_initialized:
             self.initialize(True)
 
-        while self.epoch < self.max_num_epochs:
+        while self.epoch < self.current_max_num_epochs:
             self.print_to_log_file("\nepoch: ", self.epoch)
             epoch_start_time = time()
             train_losses_epoch = []
 
             # train one epoch
             self.network.train()
-
+            self.losses_EWC = []
             if self.use_progress_bar:
                 with trange(self.num_batches_per_epoch) as tbar:
                     for b in tbar:
-                        tbar.set_description("Epoch {}/{}".format(self.epoch+1, self.max_num_epochs))
+                        tbar.set_description("Epoch {}/{}".format(self.epoch+1, self.current_max_num_epochs))
 
                         l = self.run_iteration(self.tr_gen, True)
 
@@ -455,6 +499,10 @@ class NetworkTrainer(object):
                 for _ in range(self.num_batches_per_epoch):
                     l = self.run_iteration(self.tr_gen, True)
                     train_losses_epoch.append(l)
+
+            if hasattr(self,'method') and self.method == "EWC" and hasattr(self, 'optpar_previous'):
+                self.print_to_log_file('mean EWC loss: %.4f' % (sum(self.losses_EWC) / len(self.losses_EWC)))
+                del self.losses_EWC
 
             self.all_tr_losses.append(np.mean(train_losses_epoch))
             self.print_to_log_file("train loss : %.4f" % self.all_tr_losses[-1])
@@ -483,23 +531,42 @@ class NetworkTrainer(object):
 
             continue_training = self.on_epoch_end()
 
+            if hasattr(self,'previous_val_loader'):
+                self.eval_on_previous_dataset()
+
             epoch_end_time = time()
 
             if not continue_training:
                 # allows for early stopping
                 break
 
+
+
             self.epoch += 1
             self.print_to_log_file("This epoch took %f s\n" % (epoch_end_time - epoch_start_time))
 
         self.epoch -= 1  # if we don't do this we can get a problem with loading model_final_checkpoint.
+        # add codes here for continual learning
+        if 'Continual' in self.__class__.__name__:
+            if self.save_final_checkpoint:
+                if hasattr(self,'method') and self.method == 'EWC':
+                    self.update_fisher_dict(self.tr_gen)
 
-        if self.save_final_checkpoint: self.save_checkpoint(join(self.output_folder, "model_final_checkpoint.model"))
-        # now we can delete latest as it will be identical with final
-        if isfile(join(self.output_folder, "model_latest.model")):
-            os.remove(join(self.output_folder, "model_latest.model"))
-        if isfile(join(self.output_folder, "model_latest.model.pkl")):
-            os.remove(join(self.output_folder, "model_latest.model.pkl"))
+        if hasattr(self,'episode'):
+            if self.save_final_checkpoint: self.save_checkpoint(
+                join(self.output_folder, f"model_final_checkpoint_episode{self.episode}.model"))
+            # now we can delete latest as it will be identical with final
+            if isfile(join(self.output_folder, f"model_latest_episode{self.episode}.model")):
+                os.remove(join(self.output_folder, f"model_latest_episode{self.episode}.model"))
+            if isfile(join(self.output_folder, f"model_latest.model_episode{self.episode}.pkl")):
+                os.remove(join(self.output_folder, f"model_latest.model_episode{self.episode}.pkl"))
+        else:
+            if self.save_final_checkpoint: self.save_checkpoint(join(self.output_folder, "model_final_checkpoint.model"))
+            # now we can delete latest as it will be identical with final
+            if isfile(join(self.output_folder, "model_latest.model")):
+                os.remove(join(self.output_folder, "model_latest.model"))
+            if isfile(join(self.output_folder, "model_latest.model.pkl")):
+                os.remove(join(self.output_folder, "model_latest.model.pkl"))
 
     def maybe_update_lr(self):
         # maybe update learning rate
@@ -522,7 +589,10 @@ class NetworkTrainer(object):
             self.print_to_log_file("saving scheduled checkpoint file...")
             if not self.save_latest_only:
                 self.save_checkpoint(join(self.output_folder, "model_ep_%03.0d.model" % (self.epoch + 1)))
-            self.save_checkpoint(join(self.output_folder, "model_latest.model"))
+            if not hasattr(self,'episode'):
+                self.save_checkpoint(join(self.output_folder, "model_latest.model"))
+            else:
+                self.save_checkpoint(join(self.output_folder, f"model_latest_episode{self.episode}.model"))
             self.print_to_log_file("done")
 
     def update_eval_criterion_MA(self):
@@ -574,7 +644,18 @@ class NetworkTrainer(object):
             if self.val_eval_criterion_MA > self.best_val_eval_criterion_MA:
                 self.best_val_eval_criterion_MA = self.val_eval_criterion_MA
                 #self.print_to_log_file("saving best epoch checkpoint...")
-                if self.save_best_checkpoint: self.save_checkpoint(join(self.output_folder, "model_best.model"))
+
+                if "Continual" in self.__class__.__name__:
+                    # to save time
+                    if self.save_best_checkpoint and self.epoch > (self.max_num_epochs)/4:
+                        if hasattr(self, 'method') and self.method == 'EWC':
+                            self.update_fisher_dict(self.tr_gen)
+
+                if hasattr(self,'episode'):
+                        self.save_checkpoint(join(self.output_folder, f"model_best_episode{self.episode}.model"))
+                else:
+                    if self.save_best_checkpoint:
+                        self.save_checkpoint(join(self.output_folder, "model_best.model"))
 
             # Now see if the moving average of the train loss has improved. If yes then reset patience, else
             # increase patience

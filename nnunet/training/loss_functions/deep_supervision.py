@@ -14,7 +14,7 @@
 
 
 from torch import nn
-
+import torch
 
 class MultipleOutputLoss2(nn.Module):
     def __init__(self, loss, weight_factors=None):
@@ -41,3 +41,25 @@ class MultipleOutputLoss2(nn.Module):
             if weights[i] != 0:
                 l += weights[i] * self.loss(x[i], y[i])
         return l
+
+
+if __name__ == '__main__':
+    # for testing
+    import torch.nn as nn
+    import torch
+    from torch.autograd import Variable
+    from nnunet.training.loss_functions.crossentropy import RobustCrossEntropyLoss
+    weights = [0.53333333,0.26666667,0.13333333,0.06666667,0.]
+    cross_entropy_loss = RobustCrossEntropyLoss(reduction = 'none')
+    final_loss = MultipleOutputLoss2(cross_entropy_loss,weights)
+    x = [Variable(torch.rand(2,10,64,64)) for _ in range(5)]
+    y = [Variable(torch.randint(high = 10,size=(2,1,64,64))) for _ in range(5)]
+    a = Variable(torch.tensor(10.), requires_grad=True)
+    b = Variable(torch.tensor(3.), requires_grad=True)
+    c = Variable(torch.tensor(5.), requires_grad=True)
+    prediction = [torch.sum(c*(a * t + b)) for t in x]
+    log_prob = final_loss(x,y)
+    grads = [torch.autograd.grad(outputs=pred,
+                        inputs=(a,b,c), allow_unused=True) for pred in prediction]
+    grads= [sum(d**2 for d in p) for p in zip(*grads)]
+    print(grads)

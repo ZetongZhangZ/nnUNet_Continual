@@ -108,6 +108,7 @@ def crop_to_nonzero(data, seg=None, nonzero_label=-1):
     nonzero_mask = crop_to_bbox(nonzero_mask, bbox)[None]
     if seg is not None:
         seg[(seg == 0) & (nonzero_mask == 0)] = nonzero_label
+        #pixels that are background and have no input information(black) are marked as -1
     else:
         nonzero_mask = nonzero_mask.astype(int)
         nonzero_mask[nonzero_mask == 0] = nonzero_label

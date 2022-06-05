@@ -275,12 +275,20 @@ class nnUNetTrainer(NetworkTrainer):
         try:
             from batchgenerators.utilities.file_and_folder_operations import join
             import hiddenlayer as hl
+            transforms = [
+                # Fold Conv, BN, RELU layers into one
+                hl.transforms.Fold("Conv > InstanceNormalization > LeakyRelu", "ConvInNormLRelu"),
+                # Fold Conv, BN layers together
+                hl.transforms.Fold("Conv > InstanceNormalization", "ConvInNorm"),
+                # Fold repeated blocks
+                hl.transforms.FoldDuplicates(),
+            ]
             if torch.cuda.is_available():
                 g = hl.build_graph(self.network, torch.rand((1, self.num_input_channels, *self.patch_size)).cuda(),
-                                   transforms=None)
+                                   transforms=transforms)
             else:
                 g = hl.build_graph(self.network, torch.rand((1, self.num_input_channels, *self.patch_size)),
-                                   transforms=None)
+                                   transforms=transforms)
             g.save(join(self.output_folder, "network_architecture.pdf"))
             del g
         except Exception as e:
@@ -306,7 +314,11 @@ class nnUNetTrainer(NetworkTrainer):
         del dct['dataset']
         del dct['dataset_tr']
         del dct['dataset_val']
-        save_json(dct, join(self.output_folder, "debug.json"))
+
+        if hasattr(self,'episode'):
+            save_json(dct, join(self.output_folder, f"debug_episode{self.episode}.json"))
+        else:
+            save_json(dct, join(self.output_folder, "debug.json"))
 
         import shutil
 
@@ -314,7 +326,11 @@ class nnUNetTrainer(NetworkTrainer):
 
     def run_training(self):
         self.save_debug_information()
-        super(nnUNetTrainer, self).run_training()
+        if hasattr(self,'trainer_task_dict'):
+            self.run_training_multi_datasets()
+        else:
+            super(nnUNetTrainer, self).run_training()
+
 
     def load_plans_file(self):
         """
@@ -485,7 +501,8 @@ class nnUNetTrainer(NetworkTrainer):
                                                          use_sliding_window: bool = True, step_size: float = 0.5,
                                                          use_gaussian: bool = True, pad_border_mode: str = 'constant',
                                                          pad_kwargs: dict = None, all_in_gpu: bool = False,
-                                                         verbose: bool = True, mixed_precision: bool = True) -> Tuple[np.ndarray, np.ndarray]:
+                                                         verbose: bool = True, mixed_precision: bool = True) -> Tuple[
+        np.ndarray, np.ndarray]:
         """
         :param data:
         :param do_mirroring:
@@ -639,8 +656,13 @@ class nnUNetTrainer(NetworkTrainer):
         self.print_to_log_file("evaluation of raw predictions")
         task = self.dataset_directory.split("/")[-1]
         job_name = self.experiment_name
+
+        if hasattr(self, 'episode'):
+            json_output_file = join(output_folder, f"summary_episode{self.episode}.json")
+        else:
+            json_output_file = join(output_folder, "summary.json")
         _ = aggregate_scores(pred_gt_tuples, labels=list(range(self.num_classes)),
-                             json_output_file=join(output_folder, "summary.json"),
+                             json_output_file=json_output_file,
                              json_name=job_name + " val tiled %s" % (str(use_sliding_window)),
                              json_author="Fabian",
                              json_task=task, num_threads=default_num_threads)
@@ -651,8 +673,13 @@ class nnUNetTrainer(NetworkTrainer):
             # classes and then rerun the evaluation. Those classes for which this resulted in an improved dice score will
             # have this applied during inference as well
             self.print_to_log_file("determining postprocessing")
-            determine_postprocessing(self.output_folder, self.gt_niftis_folder, validation_folder_name,
-                                     final_subf_name=validation_folder_name + "_postprocessed", debug=debug)
+            if hasattr(self, 'episode'):
+                determine_postprocessing(self.output_folder, self.gt_niftis_folder, validation_folder_name,
+                                         final_subf_name=validation_folder_name + "_postprocessed", debug=debug,
+                                         episode=self.episode)
+            else:
+                determine_postprocessing(self.output_folder, self.gt_niftis_folder, validation_folder_name,
+                                         final_subf_name=validation_folder_name + "_postprocessed", debug=debug)
             # after this the final predictions for the vlaidation set can be found in validation_folder_name_base + "_postprocessed"
             # They are always in that folder, even if no postprocessing as applied!
 
@@ -729,6 +756,8 @@ class nnUNetTrainer(NetworkTrainer):
         info['init'] = self.init_args
         info['name'] = self.__class__.__name__
         info['class'] = str(self.__class__)
-        info['plans'] = self.plans
-
+        if not hasattr(self,'plans_dict'):
+            info['plans'] = self.plans
+        else:
+            info['plans'] = self.plans_dict
         write_pickle(info, fname + ".pkl")

@@ -14,29 +14,24 @@
 
 
 import argparse
+from collections import OrderedDict
+from sklearn.manifold import TSNE
+from sklearn.decomposition import PCA
 from batchgenerators.utilities.file_and_folder_operations import *
-from nnunet.run.default_configuration import get_default_configuration
-from nnunet.paths import default_plans_identifier
-from nnunet.run.load_pretrained_weights import load_pretrained_weights
-from nnunet.training.cascade_stuff.predict_next_stage import predict_next_stage
-from nnunet.training.network_training.nnUNetTrainer import nnUNetTrainer
-from nnunet.training.network_training.nnUNetTrainerCascadeFullRes import nnUNetTrainerCascadeFullRes
-from nnunet.training.network_training.nnUNetTrainerV2_CascadeFullRes import nnUNetTrainerV2CascadeFullRes
+from nnunet.run.default_configuration import get_default_configuration,get_nointeract_configuration
 from nnunet.utilities.task_name_id_conversion import convert_id_to_task_name
-
+import numpy as np
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("network")
     parser.add_argument("network_trainer")
-    parser.add_argument("task", help="can be task name or task id")
     parser.add_argument("fold", help='0, 1, ..., 5 or \'all\'')
     parser.add_argument("-val", "--validation_only", help="use this if you want to only run the validation",
                         action="store_true")
     parser.add_argument("-c", "--continue_training", help="use this if you want to continue a training",
                         action="store_true")
-    parser.add_argument("-p", help="plans identifier. Only change this if you created a custom experiment planner",
-                        default=default_plans_identifier, required=False)
+
     parser.add_argument("--use_compressed_data", default=False, action="store_true",
                         help="If you set use_compressed_data, the training cases will not be decompressed. Reading compressed data "
                              "is much more CPU and RAM intensive and should only be used if you know what you are "
@@ -85,116 +80,113 @@ def main():
                         help='Validation does not overwrite existing segmentations')
     parser.add_argument('--disable_next_stage_pred', action='store_true', default=False,
                         help='do not predict next stage')
-    parser.add_argument('-pretrained_weights', type=str, required=False, default=None,
+    parser.add_argument('--pretrained_weights', type=str, required=False, default=None,
                         help='path to nnU-Net checkpoint file to be used as pretrained model (use .model '
                              'file, for example model_final_checkpoint.model). Will only be used when actually training. '
                              'Optional. Beta. Use with caution.')
+    parser.add_argument('--num_samples', type=int, default=3,
+                        help='the number of image,user interaction pairs')
+    parser.add_argument('--slice_ratio', type=float, default=0.1,
+                        help='the number of slices across z axis used to generate clicks')
+    parser.add_argument('--nointeract', default = False,action = 'store_true',
+                        help='Specify to train without interactions')
+    parser.add_argument('--fixiteration', default = None,help = 'Number of total iterations')
+    parser.add_argument('--exp_name',default = None)
+    parser.add_argument('--sample_dataset', default = False, action = 'store_true',
+                        help = 'use only part of image of each dataset')
 
     args = parser.parse_args()
 
-    task = args.task
     fold = args.fold
     network = args.network
     network_trainer = args.network_trainer
     validation_only = args.validation_only
-    plans_identifier = args.p
-    find_lr = args.find_lr
-    disable_postprocessing_on_folds = args.disable_postprocessing_on_folds
 
     use_compressed_data = args.use_compressed_data
     decompress_data = not use_compressed_data
 
     deterministic = args.deterministic
-    valbest = args.valbest
+
 
     fp32 = args.fp32
     run_mixed_precision = not fp32
-
-    val_folder = args.val_folder
-    # interp_order = args.interp_order
-    # interp_order_z = args.interp_order_z
-    # force_separate_z = args.force_separate_z
-
-    if not task.startswith("Task"):
-        task_id = int(task)
-        task = convert_id_to_task_name(task_id)
 
     if fold == 'all':
         pass
     else:
         fold = int(fold)
 
-    # if force_separate_z == "None":
-    #     force_separate_z = None
-    # elif force_separate_z == "False":
-    #     force_separate_z = False
-    # elif force_separate_z == "True":
-    #     force_separate_z = True
-    # else:
-    #     raise ValueError("force_separate_z must be None, True or False. Given: %s" % force_separate_z)
+    task_list = [3, 6, 7, 8, 9, 10, 135]
+    task_dict = {
+        3: {'name': 'Liver', 'training_set_size': 94, 'plan_identifier': 'nnUNetPlans_interactive'},
+        6: {'name': 'Lung', 'training_set_size': 50, 'plan_identifier': 'nnUNetPlansv2.1'},
+        7: {'name': 'Pancreas', 'training_set_size': 224, 'plan_identifier': 'nnUNetPlans_interactive'},
+        8: {'name': 'HepaticVessel', 'training_set_size': 241, 'plan_identifier': 'nnUNetPlansv2.1'},
+        9: {'name': 'Spleen', 'training_set_size': 41, 'plan_identifier': 'nnUNetPlansv2.1'},
+        10: {'name': 'Colon', 'training_set_size': 126, 'plan_identifier': 'nnUNetPlansv2.1'},
+        135: {'name': 'KiTS2021', 'training_set_size': 240, 'plan_identifier': 'nnUNetPlans_interactive'},
+    }
+    features_all = OrderedDict()
+    labels_all = OrderedDict()
+    for task in task_list:
+        task_id = int(task)
+        task = convert_id_to_task_name(task_id)
+        plans_identifier = task_dict[task_id]['plan_identifier']
 
-    plans_file, output_folder_name, dataset_directory, batch_dice, stage, \
-    trainer_class = get_default_configuration(network, task, network_trainer, plans_identifier)
-
-
-    if trainer_class is None:
-        raise RuntimeError("Could not find trainer class in nnunet.training.network_training")
-
-    if network == "3d_cascade_fullres":
-        assert issubclass(trainer_class, (nnUNetTrainerCascadeFullRes, nnUNetTrainerV2CascadeFullRes)), \
-            "If running 3d_cascade_fullres then your " \
-            "trainer class must be derived from " \
-            "nnUNetTrainerCascadeFullRes"
-    else:
-        assert issubclass(trainer_class,
-                          nnUNetTrainer), "network_trainer was found but is not derived from nnUNetTrainer"
-
-    trainer = trainer_class(plans_file, fold, output_folder=output_folder_name, dataset_directory=dataset_directory,
-                            batch_dice=batch_dice, stage=stage, unpack_data=decompress_data,
-                            deterministic=deterministic,
-                            fp16=run_mixed_precision)
-    if args.disable_saving:
-        trainer.save_final_checkpoint = False # whether or not to save the final checkpoint
-        trainer.save_best_checkpoint = False  # whether or not to save the best checkpoint according to
-        # self.best_val_eval_criterion_MA
-        trainer.save_intermediate_checkpoints = True  # whether or not to save checkpoint_latest. We need that in case
-        # the training chashes
-        trainer.save_latest_only = True  # if false it will not store/overwrite _latest but separate files each
-
-    trainer.initialize(not validation_only)
-
-    if find_lr:
-        trainer.find_lr()
-    else:
-        if not validation_only:
-            if args.continue_training:
-                # -c was set, continue a previous training and ignore pretrained weights
-                trainer.load_latest_checkpoint()
-            elif (not args.continue_training) and (args.pretrained_weights is not None):
-                # we start a new training. If pretrained_weights are set, use them
-                load_pretrained_weights(trainer.network, args.pretrained_weights)
-            else:
-                # new training without pretraine weights, do nothing
-                pass
-
-            trainer.run_training()
+        if not args.nointeract:
+            plans_file, output_folder_name, dataset_directory, batch_dice, stage, \
+            trainer_class = get_default_configuration(network, task, network_trainer, plans_identifier)
         else:
-            if valbest:
-                trainer.load_best_checkpoint(train=False)
+            plans_file, output_folder_name, dataset_directory, batch_dice, stage, \
+            trainer_class = get_nointeract_configuration(network, task, network_trainer, plans_identifier)
+
+        if not args.nointeract:
+            output_folder_name += f'_ratio_{args.slice_ratio}_sample_{args.num_samples}'
+        else:
+            output_folder_name += '_nointeract'
+            args.slice_ratio = 0.
+            args.num_samples = 1
+
+        if args.fixiteration:
+            output_folder_name += '_iteration_' + args.fixiteration
+            args.fixiteration = int(args.fixiteration)
+
+        if args.exp_name:
+            output_folder_name += '_' + args.exp_name
+
+        trainer = trainer_class(plans_file, fold, output_folder=output_folder_name, dataset_directory=dataset_directory,
+                                batch_dice=batch_dice, stage=stage, unpack_data=decompress_data,
+                                deterministic=deterministic,
+                                fp16=run_mixed_precision,args =args)
+
+        trainer.initialize(not validation_only)
+        if plans_identifier == 'nnUNetPlans_interactive':
+            trainer.gt_niftis_folder = join(trainer.dataset_directory, "gt_segmentations_only_foreground")
+        trainer.save_every = 10
+        trainer.load_best_checkpoint(train=False)
+        trainer._maybe_init_amp()
+
+        features = trainer.get_features()
+        for k,feature in features.items():
+            if k not in features_all.keys():
+                features_all[k] = feature
+                labels_all[k] = task_id * np.ones(feature.shape[0])
             else:
-                #trainer.load_final_checkpoint(train=False)
-                trainer.load_best_checkpoint(train=False)
+                features_all[k] = np.concatenate((features_all[k],feature),axis = 0)
+                labels_all[k] = np.concatenate((labels_all[k],task_id * np.ones(feature.shape[0])))
 
-        trainer.network.eval()
+    for k, features in features_all.items():
+        trainer.print_to_log_file(f'Feature_size:', features.shape[1])
 
-        # predict validation
-        trainer.validate(save_softmax=args.npz, validation_folder_name=val_folder,
-                         run_postprocessing_on_folds=not disable_postprocessing_on_folds,
-                         overwrite=args.val_disable_overwrite)
+        if features.shape[1] > 50:
+            pca_50 = PCA(n_components=50)
+            pca_result_50 = pca_50.fit_transform(features)
+            features_tsne = TSNE(random_state=0).fit_transform(pca_result_50)
+        else:
+            features_tsne = TSNE(random_state=0).fit_transform(features)
 
-        if network == '3d_lowres' and not args.disable_next_stage_pred:
-            print("predicting segmentations for the next stage of the cascade")
-            predict_next_stage(trainer, join(dataset_directory, trainer.plans['data_identifier'] + "_stage%d" % 1))
+        trainer.print_to_log_file(f'TSNE of level {k} done')
+        trainer.plot_cluster(features_tsne, labels_all[k], level=k)
 
 
 if __name__ == "__main__":

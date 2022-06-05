@@ -125,6 +125,15 @@ def verify_dataset_integrity(folder):
         # check if all files are present
         expected_label_file = join(folder, "labelsTr", c + ".nii.gz")
         label_files.append(expected_label_file)
+
+        if num_modalities == 1:
+            raw_expected_image_files = join(folder, "imagesTr", c + ".nii.gz")
+            rename_expected_image_files = join(folder, "imagesTr", c + "_0000.nii.gz")
+            if isfile(raw_expected_image_files) and not isfile(rename_expected_image_files):
+                os.rename(raw_expected_image_files,rename_expected_image_files)
+                nii_files_in_imagesTr.remove(os.path.basename(raw_expected_image_files))
+                nii_files_in_imagesTr.append(os.path.basename(rename_expected_image_files))
+
         expected_image_files = [join(folder, "imagesTr", c + "_%04.0d.nii.gz" % i) for i in range(num_modalities)]
         assert isfile(expected_label_file), "could not find label file for case %s. Expected file: \n%s" % (
             c, expected_label_file)
@@ -167,7 +176,6 @@ def verify_dataset_integrity(folder):
     # verify that only properly declared values are present in the labels
     print("Verifying label values")
     expected_labels = list(int(i) for i in dataset['labels'].keys())
-    expected_labels.sort()
 
     # check if labels are in consecutive order
     assert expected_labels[0] == 0, 'The first label must be 0 and maps to the background'
@@ -200,6 +208,19 @@ def verify_dataset_integrity(folder):
 
         for c in expected_test_identifiers:
             # check if all files are present
+
+            if num_modalities == 1:
+                raw_expected_image_files = join(folder, "imagesTs", c + ".nii.gz")
+                rename_expected_image_files = join(folder, "imagesTs", c + "_0000.nii.gz")
+                if isfile(raw_expected_image_files) and not isfile(rename_expected_image_files):
+                    os.rename(raw_expected_image_files, rename_expected_image_files)
+                    test_case = './imagesTs/' + c + '.nii.gz'
+                    rename_test_case = './imagesTs/' + c + '_0000.nii.gz'
+                    dataset['test'].remove(test_case)
+                    dataset['test'].append(rename_test_case)
+                    nii_files_in_imagesTs.remove(os.path.basename(raw_expected_image_files))
+                    nii_files_in_imagesTs.append(os.path.basename(rename_expected_image_files))
+
             expected_image_files = [join(folder, "imagesTs", c + "_%04.0d.nii.gz" % i) for i in range(num_modalities)]
             assert all([isfile(i) for i in
                         expected_image_files]), "some image files are missing for case %s. Expected files:\n %s" % (
@@ -219,7 +240,7 @@ def verify_dataset_integrity(folder):
             for i in expected_image_files:
                 nii_files_in_imagesTs.remove(os.path.basename(i))
         assert len(
-            nii_files_in_imagesTs) == 0, "there are training cases in imagesTs that are not listed in dataset.json: %s" % nii_files_in_imagesTr
+            nii_files_in_imagesTs) == 0, "there are training cases in imagesTs that are not listed in dataset.json: %s" % nii_files_in_imagesTs
 
     all_same, unique_orientations = verify_all_same_orientation(join(folder, "imagesTr"))
     if not all_same:
@@ -233,7 +254,8 @@ def verify_dataset_integrity(folder):
 
     if has_nan:
         raise RuntimeError("Some images have nan values in them. This will break the training. See text output above to see which ones")
-
+    
+    save_json(dataset,join(folder, "dataset.json"))
 
 def reorient_to_RAS(img_fname: str, output_fname: str = None):
     img = nib.load(img_fname)
@@ -248,12 +270,28 @@ if __name__ == "__main__":
     import SimpleITK as sitk
 
     # load image
-    gt_itk = sitk.ReadImage(
-        "/media/fabian/Results/nnUNet/3d_fullres/Task064_KiTS_labelsFixed/nnUNetTrainerV2__nnUNetPlansv2.1/gt_niftis/case_00085.nii.gz")
-
+    img_index = 0
+    img_name = str(img_index).rjust(5,'0')
+    img_path = f"../../../dataset/nnUNet_raw_data/Task500_BraTS2021/imagesTr/BraTS2021_{img_name}.nii.gz"
+    img_itks = []
+    for i in range(4):
+        img_itk = sitk.ReadImage(img_path.replace('.nii',f'_000{i}.nii'))
+        img_itks.append(img_itk)
+    gt_itk = sitk.ReadImage(img_path.replace('imagesTr','labelsTr'))
     # get numpy array
-    pred_npy = sitk.GetArrayFromImage(gt_itk)
-
+    import matplotlib.pyplot as plt
+    array_index = range(100,150)
+    for idx in array_index:
+        fig, axes = plt.subplots(3, 2)
+        for i in range(4):
+            img_array = sitk.GetArrayFromImage(img_itks[i])[:,idx,:]
+            axes[i%2,i//2].imshow(img_array,cmap='gray')
+            axes[i%2,i//2].axis('off')
+        pred_npy = sitk.GetArrayFromImage(gt_itk)[:,idx,:]
+        axes[2,0].imshow(pred_npy)
+        axes[2,0].axis('off')
+        axes[2,1].axis('off')
+        plt.show()
     # create new image from numpy array
     prek_itk_new = sitk.GetImageFromArray(pred_npy)
     # copy geometry

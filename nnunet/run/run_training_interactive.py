@@ -15,7 +15,7 @@
 
 import argparse
 from batchgenerators.utilities.file_and_folder_operations import *
-from nnunet.run.default_configuration import get_default_configuration
+from nnunet.run.default_configuration import get_default_configuration,get_nointeract_configuration
 from nnunet.paths import default_plans_identifier
 from nnunet.run.load_pretrained_weights import load_pretrained_weights
 from nnunet.training.cascade_stuff.predict_next_stage import predict_next_stage
@@ -36,7 +36,7 @@ def main():
     parser.add_argument("-c", "--continue_training", help="use this if you want to continue a training",
                         action="store_true")
     parser.add_argument("-p", help="plans identifier. Only change this if you created a custom experiment planner",
-                        default=default_plans_identifier, required=False)
+                        default="nnUNetPlans_interactive", required=False)
     parser.add_argument("--use_compressed_data", default=False, action="store_true",
                         help="If you set use_compressed_data, the training cases will not be decompressed. Reading compressed data "
                              "is much more CPU and RAM intensive and should only be used if you know what you are "
@@ -85,10 +85,20 @@ def main():
                         help='Validation does not overwrite existing segmentations')
     parser.add_argument('--disable_next_stage_pred', action='store_true', default=False,
                         help='do not predict next stage')
-    parser.add_argument('-pretrained_weights', type=str, required=False, default=None,
+    parser.add_argument('--pretrained_weights', type=str, required=False, default=None,
                         help='path to nnU-Net checkpoint file to be used as pretrained model (use .model '
                              'file, for example model_final_checkpoint.model). Will only be used when actually training. '
                              'Optional. Beta. Use with caution.')
+    parser.add_argument('--num_samples', type=int, default=3,
+                        help='the number of image,user interaction pairs')
+    parser.add_argument('--slice_ratio', type=float, default=0.1,
+                        help='the number of slices across z axis used to generate clicks')
+    parser.add_argument('--nointeract', default = False,action = 'store_true',
+                        help='Specify to train without interactions')
+    parser.add_argument('--fixiteration', default = None,help = 'Number of total iterations')
+    parser.add_argument('--exp_name',default = None)
+    parser.add_argument('--sample_dataset', default = False, action = 'store_true',
+                        help = 'use only part of image of each dataset')
 
     args = parser.parse_args()
 
@@ -132,9 +142,26 @@ def main():
     #     force_separate_z = True
     # else:
     #     raise ValueError("force_separate_z must be None, True or False. Given: %s" % force_separate_z)
+    if not args.nointeract:
+        plans_file, output_folder_name, dataset_directory, batch_dice, stage, \
+        trainer_class = get_default_configuration(network, task, network_trainer, plans_identifier)
+    else:
+        plans_file, output_folder_name, dataset_directory, batch_dice, stage, \
+        trainer_class = get_nointeract_configuration(network, task, network_trainer, plans_identifier)
 
-    plans_file, output_folder_name, dataset_directory, batch_dice, stage, \
-    trainer_class = get_default_configuration(network, task, network_trainer, plans_identifier)
+    if not args.nointeract:
+        output_folder_name += f'_ratio_{args.slice_ratio}_sample_{args.num_samples}'
+    else:
+        output_folder_name += '_nointeract'
+        args.slice_ratio = 0.
+        args.num_samples = 1
+
+    if args.fixiteration:
+        output_folder_name += '_iteration_' + args.fixiteration
+        args.fixiteration = int(args.fixiteration)
+
+    if args.exp_name:
+        output_folder_name += '_' + args.exp_name
 
 
     if trainer_class is None:
@@ -152,7 +179,7 @@ def main():
     trainer = trainer_class(plans_file, fold, output_folder=output_folder_name, dataset_directory=dataset_directory,
                             batch_dice=batch_dice, stage=stage, unpack_data=decompress_data,
                             deterministic=deterministic,
-                            fp16=run_mixed_precision)
+                            fp16=run_mixed_precision,args =args)
     if args.disable_saving:
         trainer.save_final_checkpoint = False # whether or not to save the final checkpoint
         trainer.save_best_checkpoint = False  # whether or not to save the best checkpoint according to
@@ -162,6 +189,9 @@ def main():
         trainer.save_latest_only = True  # if false it will not store/overwrite _latest but separate files each
 
     trainer.initialize(not validation_only)
+    if plans_identifier == 'nnUNetPlans_interactive':
+        trainer.gt_niftis_folder = join(trainer.dataset_directory, "gt_segmentations_only_foreground")
+    trainer.save_every = 10
 
     if find_lr:
         trainer.find_lr()
@@ -172,7 +202,7 @@ def main():
                 trainer.load_latest_checkpoint()
             elif (not args.continue_training) and (args.pretrained_weights is not None):
                 # we start a new training. If pretrained_weights are set, use them
-                load_pretrained_weights(trainer.network, args.pretrained_weights)
+                load_pretrained_weights(trainer.network, args.pretrained_weights,verbose = True,ignore_decoder = True)
             else:
                 # new training without pretraine weights, do nothing
                 pass
@@ -182,8 +212,7 @@ def main():
             if valbest:
                 trainer.load_best_checkpoint(train=False)
             else:
-                #trainer.load_final_checkpoint(train=False)
-                trainer.load_best_checkpoint(train=False)
+                trainer.load_final_checkpoint(train=False)
 
         trainer.network.eval()
 

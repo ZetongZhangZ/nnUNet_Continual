@@ -124,7 +124,7 @@ def determine_postprocessing(base, gt_labels_folder, raw_subfolder_name="validat
                              final_subf_name="validation_final", processes=default_num_threads,
                              dice_threshold=0, debug=False,
                              advanced_postprocessing=False,
-                             pp_filename="postprocessing.json"):
+                             pp_filename="postprocessing.json", episode=None):
     """
     :param base:
     :param gt_labels_folder: subfolder of base with niftis of ground truth labels
@@ -137,8 +137,12 @@ def determine_postprocessing(base, gt_labels_folder, raw_subfolder_name="validat
     :return:
     """
     # lets see what classes are in the dataset
-    classes = [int(i) for i in load_json(join(base, raw_subfolder_name, "summary.json"))['results']['mean'].keys() if
-               int(i) != 0]
+    if episode is None:
+        classes = [int(i) for i in load_json(join(base, raw_subfolder_name, "summary.json"))['results']['mean'].keys()
+                   if int(i) != 0]
+    else:
+        classes = [int(i) for i in load_json(join(base, raw_subfolder_name, f"summary_episode{episode}.json"))['results']['mean'].keys()
+                   if int(i) != 0]
 
     folder_all_classes_as_fg = join(base, temp_folder + "_allClasses")
     folder_per_class = join(base, temp_folder + "_perClass")
@@ -150,9 +154,13 @@ def determine_postprocessing(base, gt_labels_folder, raw_subfolder_name="validat
 
     # multiprocessing rules
     p = Pool(processes)
-
-    assert isfile(join(base, raw_subfolder_name, "summary.json")), "join(base, raw_subfolder_name) does not " \
-                                                                   "contain a summary.json"
+    if episode is None:
+        assert isfile(join(base, raw_subfolder_name, "summary.json")), "join(base, raw_subfolder_name) does not " \
+                                                                       "contain a summary.json"
+    else:
+        assert isfile(join(base, raw_subfolder_name,
+                           f"summary_episode{episode}.json")), "join(base, raw_subfolder_name) does not " \
+                                                               "contain a summary.json"
 
     # these are all the files we will be dealing with
     fnames = subfiles(join(base, raw_subfolder_name), suffix=".nii.gz", join=False)
@@ -170,8 +178,11 @@ def determine_postprocessing(base, gt_labels_folder, raw_subfolder_name="validat
     pp_results['for_which_classes'] = []
     pp_results['min_valid_object_sizes'] = {}
 
-
-    validation_result_raw = load_json(join(base, raw_subfolder_name, "summary.json"))['results']
+    if episode is None:
+        summary_path = join(base, raw_subfolder_name, "summary.json")
+    else:
+        summary_path = join(base, raw_subfolder_name, f"summary_episode{episode}.json")
+    validation_result_raw = load_json(summary_path)['results']
     pp_results['num_samples'] = len(validation_result_raw['all'])
     validation_result_raw = validation_result_raw['mean']
 
@@ -225,14 +236,19 @@ def determine_postprocessing(base, gt_labels_folder, raw_subfolder_name="validat
     _ = [i.get() for i in results]
 
     # evaluate postprocessed predictions
+    if episode is None:
+        json_output_file = join(folder_all_classes_as_fg, "summary.json")
+    else:
+        json_output_file = join(folder_all_classes_as_fg, f"summary_episode{episode}.json")
+
     _ = aggregate_scores(pred_gt_tuples, labels=classes,
-                         json_output_file=join(folder_all_classes_as_fg, "summary.json"),
+                         json_output_file=json_output_file,
                          json_author="Fabian", num_threads=processes)
 
     # now we need to figure out if doing this improved the dice scores. We will implement that defensively in so far
     # that if a single class got worse as a result we won't do this. We can change this in the future but right now I
     # prefer to do it this way
-    validation_result_PP_test = load_json(join(folder_all_classes_as_fg, "summary.json"))['results']['mean']
+    validation_result_PP_test = load_json(json_output_file)['results']['mean']
 
     for c in classes:
         dc_raw = validation_result_raw[str(c)]['Dice']
@@ -315,14 +331,20 @@ def determine_postprocessing(base, gt_labels_folder, raw_subfolder_name="validat
         for f in fnames:
             predicted_segmentation = join(source, f)
             output_file = join(folder_per_class, f)
-            results.append(p.starmap_async(load_remove_save, ((predicted_segmentation, output_file, classes, min_size_kept),)))
+            results.append(
+                p.starmap_async(load_remove_save, ((predicted_segmentation, output_file, classes, min_size_kept),)))
             pred_gt_tuples.append([output_file, join(gt_labels_folder, f)])
 
         _ = [i.get() for i in results]
 
         # evaluate postprocessed predictions
+        if episode is None:
+            json_output_file_per_class = join(folder_per_class, "summary.json")
+        else:
+            json_output_file_per_class = join(folder_per_class, f"summary_episode{episode}.json")
+
         _ = aggregate_scores(pred_gt_tuples, labels=classes,
-                             json_output_file=join(folder_per_class, "summary.json"),
+                             json_output_file=json_output_file_per_class,
                              json_author="Fabian", num_threads=processes)
 
         if do_fg_cc:
@@ -331,7 +353,7 @@ def determine_postprocessing(base, gt_labels_folder, raw_subfolder_name="validat
             old_res = validation_result_raw
 
         # these are the new dice scores
-        validation_result_PP_test = load_json(join(folder_per_class, "summary.json"))['results']['mean']
+        validation_result_PP_test = load_json(json_output_file_per_class)['results']['mean']
 
         for c in classes:
             dc_raw = old_res[str(c)]['Dice']
@@ -379,12 +401,19 @@ def determine_postprocessing(base, gt_labels_folder, raw_subfolder_name="validat
 
     _ = [i.get() for i in results]
     # evaluate postprocessed predictions
+    if episode is None:
+        json_output_file_final = join(base, final_subf_name, "summary.json")
+    else:
+        json_output_file_final = join(base, final_subf_name, f"summary_episode{episode}.json")
+
     _ = aggregate_scores(pred_gt_tuples, labels=classes,
-                         json_output_file=join(base, final_subf_name, "summary.json"),
+                         json_output_file=json_output_file_final,
                          json_author="Fabian", num_threads=processes)
 
     pp_results['min_valid_object_sizes'] = str(pp_results['min_valid_object_sizes'])
 
+    if episode is not None:
+        pp_filename = pp_filename.replace('.json', f'_episode{episode}.json')
     save_json(pp_results, join(base, pp_filename))
 
     # delete temp
@@ -398,7 +427,7 @@ def determine_postprocessing(base, gt_labels_folder, raw_subfolder_name="validat
 
 
 def apply_postprocessing_to_folder(input_folder: str, output_folder: str, for_which_classes: list,
-                                   min_valid_object_size:dict=None, num_processes=8):
+                                   min_valid_object_size: dict = None, num_processes=8):
     """
     applies removing of all but the largest connected component to all niftis in a folder
     :param min_valid_object_size:

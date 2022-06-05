@@ -625,12 +625,11 @@ if __name__ == "__main__":
     REMEMBER TO CONVERT LABELS BACK TO BRATS CONVENTION AFTER PREDICTION!
     """
 
-    task_name = "BraTS2021"
-    downloaded_data_dir = "../../../BraTS/Training"
-    downloaded_data_dir_val = "../../../BraTS/Validation"
-
+    task_name = "Task500_BraTS2021"
+    downloaded_data_dir = "../../../dataset/BraTS2021/Training"
+    downloaded_data_dir_val = "../../../dataset/BraTS2021/Validation"
+    #nnUNet_raw_data = '../../../BraTS2021'
     target_base = join(nnUNet_raw_data, task_name)
-    print(target_base)
     target_imagesTr = join(target_base, "imagesTr")
     target_imagesVal = join(target_base, "imagesVal")
     target_imagesTs = join(target_base, "imagesTs")
@@ -670,11 +669,11 @@ if __name__ == "__main__":
 
 
     json_dict = OrderedDict()
-    json_dict['name'] = "BraTS2020"
+    json_dict['name'] = "BraTS2021"
     json_dict['description'] = "nothing"
     json_dict['tensorImageSize'] = "4D"
-    json_dict['reference'] = "see BraTS2020"
-    json_dict['licence'] = "see BraTS2020 license"
+    json_dict['reference'] = "see BraTS2021"
+    json_dict['licence'] = "see BraTS2021 license"
     json_dict['release'] = "0.0"
     json_dict['modality'] = {
         "0": "T1",
@@ -718,7 +717,7 @@ if __name__ == "__main__":
             shutil.copy(flair, join(target_imagesVal, patient_name + "_0003.nii.gz"))
 
 
-    downloaded_data_dir_test = "/home/fabian/Downloads/MICCAI_BraTS2020_TestingData"
+    downloaded_data_dir_test = None
 
     if isdir(downloaded_data_dir_test):
         for p in subdirs(downloaded_data_dir_test, join=False):

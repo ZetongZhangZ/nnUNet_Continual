@@ -246,7 +246,7 @@ class ExperimentPlanner(object):
 
     def plan_experiment(self):
         use_nonzero_mask_for_normalization = self.determine_whether_to_use_mask_for_norm()
-        print("Are we using the nonzero mask for normalization?", use_nonzero_mask_for_normalization)
+        print("Are we using the nonzero mask for normalizaion?", use_nonzero_mask_for_normalization)
         spacings = self.dataset_properties['all_spacings']
         sizes = self.dataset_properties['all_sizes']
 
@@ -421,7 +421,7 @@ class ExperimentPlanner(object):
             properties['use_nonzero_mask_for_norm'] = self.plans['use_mask_for_norm']
             self.save_properties_of_cropped(case_identifier, properties)
 
-    def run_preprocessing(self, num_threads):
+    def run_preprocessing(self, num_threads, args = None):
         if os.path.isdir(join(self.preprocessed_output_folder, "gt_segmentations")):
             shutil.rmtree(join(self.preprocessed_output_folder, "gt_segmentations"))
         shutil.copytree(join(self.folder_with_cropped_data, "gt_segmentations"),
@@ -432,9 +432,17 @@ class ExperimentPlanner(object):
         preprocessor_class = recursive_find_python_class([join(nnunet.__path__[0], "preprocessing")],
                                                          self.preprocessor_name, current_module="nnunet.preprocessing")
         assert preprocessor_class is not None
-        preprocessor = preprocessor_class(normalization_schemes, use_nonzero_mask_for_normalization,
-                                         self.transpose_forward,
-                                          intensityproperties)
+        if args:
+            try:
+                preprocessor = preprocessor_class(normalization_schemes, use_nonzero_mask_for_normalization,
+                                                  self.transpose_forward,
+                                                  intensityproperties,args)
+            except:
+                raise ValueError('The chosen preprocessor does not need additional arguments')
+        else:
+            preprocessor = preprocessor_class(normalization_schemes, use_nonzero_mask_for_normalization,
+                                             self.transpose_forward,
+                                              intensityproperties)
         target_spacings = [i["current_spacing"] for i in self.plans_per_stage.values()]
         if self.plans['num_stages'] > 1 and not isinstance(num_threads, (list, tuple)):
             num_threads = (default_num_threads, num_threads)

@@ -14,7 +14,7 @@
 import torch
 
 
-def load_pretrained_weights(network, fname, verbose=False):
+def load_pretrained_weights(network, fname, verbose=False, ignore_decoder = False):
     """
     THIS DOES NOT TRANSFER SEGMENTATION HEADS!
     """
@@ -23,14 +23,17 @@ def load_pretrained_weights(network, fname, verbose=False):
 
     new_state_dict = {}
 
-    # if state dict comes from nn.DataParallel but we use non-parallel model here then the state dict keys do not
+    # if state dict comes form nn.DataParallel but we use non-parallel model here then the state dict keys do not
     # match. Use heuristic to make it match
     for k, value in pretrained_dict.items():
         key = k
         # remove module. prefix from DDP models
         if key.startswith('module.'):
             key = key[7:]
-        new_state_dict[key] = value
+        if key.startswith('seg_outputs') and ignore_decoder:
+            pass
+        else:
+            new_state_dict[key] = value
 
     pretrained_dict = new_state_dict
 

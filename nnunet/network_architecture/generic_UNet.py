@@ -447,3 +447,22 @@ class Generic_UNet(SegmentationNetwork):
                 tmp += np.prod(map_size, dtype=np.int64) * num_classes
             # print(p, map_size, num_feat, tmp)
         return tmp
+
+    def get_feature_map(self,x):
+        skips = []
+        seg_outputs = []
+        for d in range(len(self.conv_blocks_context) - 1):
+            x = self.conv_blocks_context[d](x)
+            skips.append(x)
+            if not self.convolutional_pooling:
+                x = self.td[d](x)
+
+        out = dict()
+        x = self.conv_blocks_context[-1](x)
+        out['bottleneck'] = x
+        for u in range(len(self.tu)):
+            x = self.tu[u](x)
+            x = torch.cat((x, skips[-(u + 1)]), dim=1)
+            x = self.conv_blocks_localization[u](x)
+            out[x.size(1)] = x
+        return out

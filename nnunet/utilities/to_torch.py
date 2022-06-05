@@ -13,7 +13,7 @@
 #    limitations under the License.
 
 import torch
-
+from collections import OrderedDict
 
 def maybe_to_torch(d):
     if isinstance(d, list):
@@ -26,6 +26,9 @@ def maybe_to_torch(d):
 def to_cuda(data, non_blocking=True, gpu_id=0):
     if isinstance(data, list):
         data = [i.cuda(gpu_id, non_blocking=non_blocking) for i in data]
+    elif isinstance(data,dict):
+        for k,v in data.items():
+            data[k] = v.cuda(gpu_id, non_blocking=non_blocking)
     else:
         data = data.cuda(gpu_id, non_blocking=non_blocking)
     return data

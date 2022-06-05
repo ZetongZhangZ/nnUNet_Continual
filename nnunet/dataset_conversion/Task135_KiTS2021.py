@@ -6,7 +6,7 @@ from nnunet.dataset_conversion.utils import generate_dataset_json
 
 if __name__ == '__main__':
     # this is the data folder from the kits21 github repository, see https://github.com/neheller/kits21
-    kits_data_dir = '/home/fabian/git_repos/kits21/kits21/data'
+    kits_data_dir = '/srv/beegfs-benderdata/scratch/icl_mseg/data/dataset/kits21/kits21/data'
 
     # This script uses the majority voted segmentation as ground truth
     kits_segmentation_filename = 'aggregated_MAJ_seg.nii.gz'

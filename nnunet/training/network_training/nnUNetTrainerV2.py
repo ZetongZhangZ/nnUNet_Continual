@@ -46,6 +46,7 @@ class nnUNetTrainerV2(nnUNetTrainer):
         super().__init__(plans_file, fold, output_folder, dataset_directory, batch_dice, stage, unpack_data,
                          deterministic, fp16)
         self.max_num_epochs = 1000
+        # self.current_num_epochs = self.max_num_epochs
         self.initial_lr = 1e-2
         self.deep_supervision_scales = None
         self.ds_loss_weights = None
@@ -247,6 +248,11 @@ class nnUNetTrainerV2(nnUNetTrainer):
                 output = self.network(data)
                 del data
                 l = self.loss(output, target)
+                if hasattr(self,'method') and self.method == 'EWC' and hasattr(self,'optpar_previous'):
+                    if not run_online_evaluation:
+                        l_EWC = self.get_consolidation_loss_EWC()
+                        self.losses_EWC.append(l_EWC)
+                        l += l_EWC
 
             if do_backprop:
                 self.amp_grad_scaler.scale(l).backward()
@@ -258,6 +264,13 @@ class nnUNetTrainerV2(nnUNetTrainer):
             output = self.network(data)
             del data
             l = self.loss(output, target)
+            if hasattr(self, 'method') and self.method == 'EWC' and hasattr(self,'optpar_previous'):
+
+                if not run_online_evaluation:
+                    l_EWC = self.get_consolidation_loss_EWC()
+                    self.losses_EWC.append(l_EWC)
+                    # self.print_to_log_file(f'Seg loss {l:.6f}, EWC loss {l_EWC:.6f}')
+                    l += l_EWC
 
             if do_backprop:
                 l.backward()
@@ -411,7 +424,7 @@ class nnUNetTrainerV2(nnUNetTrainer):
         :return:
         """
         super().on_epoch_end()
-        continue_training = self.epoch < self.max_num_epochs
+        continue_training = self.epoch < self.current_max_num_epochs
 
         # it can rarely happen that the momentum of nnUNetTrainerV2 is too high for some dataset. If at epoch 100 the
         # estimated validation Dice is still 0 then we reduce the momentum from 0.99 to 0.95

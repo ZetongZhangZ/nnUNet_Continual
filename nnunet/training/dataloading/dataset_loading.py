@@ -69,6 +69,21 @@ def unpack_dataset(folder, threads=default_num_threads, key="data"):
     p.close()
     p.join()
 
+def unpack_dataset_from_list(folders, threads=default_num_threads, key="data"):
+    """
+    unpacks all npz files in a folder to npy (whatever you want to have unpacked must be saved unter key)
+    :param folder:
+    :param threads:
+    :param key:
+    :return:
+    """
+    p = Pool(threads)
+    npz_files = []
+    for folder in folders:
+        npz_files.extend(subfiles(folder, True, None, ".npz", True))
+    p.map(convert_to_npy, zip(npz_files, [key] * len(npz_files)))
+    p.close()
+    p.join()
 
 def pack_dataset(folder, threads=default_num_threads, key="data"):
     p = Pool(threads)
@@ -107,6 +122,26 @@ def load_dataset(folder, num_cases_properties_loading_threshold=1000):
         for i in dataset.keys():
             dataset[i]['properties'] = load_pickle(dataset[i]['properties_file'])
 
+    return dataset
+
+
+def load_dataset_from_list(folders, num_cases_properties_loading_threshold=1000):
+    print('loading dataset from list')
+    case_identifiers = get_case_identifiers(folders[0])
+    num_folder = len(folders)
+    case_identifiers.sort()
+    dataset = OrderedDict()
+    for c in case_identifiers:
+        dataset[c] = OrderedDict()
+        for i in range(num_folder):
+            dataset[c][i] = OrderedDict()
+            dataset[c][i]['data_file'] = join(folders[i], "%s.npz" % c)
+
+            # dataset[c]['properties'] = load_pickle(join(folder, "%s.pkl" % c))
+            dataset[c][i]['properties_file'] = join(folders[i], "%s.pkl" % c)
+
+            if dataset[c][i].get('seg_from_prev_stage_file') is not None:
+                dataset[c][i]['seg_from_prev_stage_file'] = join(folders[i], "%s_segs.npz" % c)
     return dataset
 
 
@@ -280,7 +315,7 @@ class DataLoader3D(SlimDataLoaderBase):
                     need_to_pad[d] = self.patch_size[d] - case_all_data.shape[d + 1]
 
             # we can now choose the bbox from -need_to_pad // 2 to shape - patch_size + need_to_pad // 2. Here we
-            # define what the upper and lower bound can be to then sample from them with np.random.randint
+            # define what the upper and lower bound can be to then sample form them with np.random.randint
             shape = case_all_data.shape[1:]
             lb_x = - need_to_pad[0] // 2
             ub_x = shape[0] + need_to_pad[0] // 2 + need_to_pad[0] % 2 - self.patch_size[0]
@@ -390,7 +425,7 @@ class DataLoader2D(SlimDataLoaderBase):
         and increase CPU usage. Therefore, I advise you to call unpack_dataset(folder) first, which will unpack all npz
         to npy. Don't forget to call delete_npy(folder) after you are done with training?
         Why all the hassle? Well the decathlon dataset is huge. Using npy for everything will consume >1 TB and that is uncool
-        given that I (Fabian) will have to store that permanently on /datasets and my local computer. With this strategy all
+        given that I (Fabian) will have to store that permanently on /datasets and my local computer. With htis strategy all
         data is stored in a compressed format (factor 10 smaller) and only unpacked when needed.
         :param data: get this with load_dataset(folder, stage=0). Plug the return value in here and you are g2g (good to go)
         :param patch_size: what patch size will this data loader return? it is common practice to first load larger
@@ -528,7 +563,7 @@ class DataLoader2D(SlimDataLoaderBase):
             assert len(case_all_data.shape) == 3
 
             # we can now choose the bbox from -need_to_pad // 2 to shape - patch_size + need_to_pad // 2. Here we
-            # define what the upper and lower bound can be to then sample from them with np.random.randint
+            # define what the upper and lower bound can be to then sample form them with np.random.randint
 
             need_to_pad = self.need_to_pad.copy()
             for d in range(2):
