@@ -36,9 +36,13 @@ from batchgenerators.utilities.file_and_folder_operations import *
 from nnunet.training.dataloading.dataset_loading import unpack_dataset_from_list
 from nnunet.network_architecture.neural_network import SegmentationNetwork
 from nnunet.training.dataloading.dataset_loading import load_dataset_from_list
+from nnunet.network_architecture.generic_UNet import Generic_UNet
 from nnunet.training.dataloading.dataset_loading import delete_npy
 from nnunet.utilities.nd_softmax import softmax_helper
+from nnunet.network_architecture.quant_layers_for_blip import Conv2d_Q,Conv3d_Q
+import math
 from nnunet.utilities.tensor_utilities import sum_tensor
+
 from torch import nn
 import seaborn as sns
 sns.set_style('darkgrid')
@@ -56,16 +60,20 @@ class nnUNetTrainerV2_Continual_MultiDatasets(nnUNetTrainerV2):
                  unpack_data=True, deterministic=True, fp16=False, args=None, previous_task_dict = None):
         super().__init__(plans_file, fold, output_folder, dataset_directory, batch_dice, stage, unpack_data,
                          deterministic, fp16)
+        # interactive learning related (not used)
         self.interact_samples = args.num_samples
         self.slice_ratio = np.clip(args.slice_ratio, a_min=0., a_max=1.)
         self.nointeract = args.nointeract
+
         self.previous_task_dict = previous_task_dict
-        self.method = args.method
-        self.lambda_ewc = args.lambda_ewc
         self.exp_name = args.exp_name
         self.sample_dataset = args.sample_dataset
         self.num_training_sample = 50
-        self.num_val_sample = int(self.num_training_sample/4)
+        self.num_val_sample = int(self.num_training_sample / 4)
+
+        self.method = args.method
+        # EWC related
+        self.lambda_ewc = args.lambda_ewc
         self.fisher_storage = args.fisher_storage
 
 
@@ -141,7 +149,11 @@ class nnUNetTrainerV2_Continual_MultiDatasets(nnUNetTrainerV2):
             else:
                 pass
 
-            self.initialize_network()
+            if self.method == 'BLIP':
+                self.initialize_network_blip()
+            else:
+                self.initialize_network()
+
             self.initialize_optimizer_and_scheduler()
 
             assert isinstance(self.network, (SegmentationNetwork, nn.DataParallel))
@@ -355,8 +367,6 @@ class nnUNetTrainerV2_Continual_MultiDatasets(nnUNetTrainerV2):
 
 
     def update_fisher_dict(self, data_generator):
-        if not hasattr(self, 'fisher_dict'):
-            self.fisher_dict = None
         self.print_to_log_file("Start Updating fisher information")
         self.log_prob = RobustCrossEntropyLoss(reduction = 'none')
         self.log_prob = MultipleOutputLoss2(self.log_prob, self.ds_loss_weights)
@@ -552,7 +562,6 @@ class nnUNetTrainerV2_Continual_MultiDatasets(nnUNetTrainerV2):
 
         self.plot_progress_all_tasks()
 
-
     def finish_online_evaluation_on_previous_dataset(self,task):
         self.online_eval_tp = np.sum(self.online_eval_tp, 0)
         self.online_eval_fp = np.sum(self.online_eval_fp, 0)
@@ -611,7 +620,6 @@ class nnUNetTrainerV2_Continual_MultiDatasets(nnUNetTrainerV2):
         except IOError:
             self.print_to_log_file("failed to plot: ", sys.exc_info())
 
-
     def plot_tsne(self):
         features_all = OrderedDict()
         labels_all = OrderedDict()
@@ -652,6 +660,65 @@ class nnUNetTrainerV2_Continual_MultiDatasets(nnUNetTrainerV2):
             self.print_to_log_file(f'TSNE of level {k} done')
             self.plot_cluster(features_tsne,labels_all[k],level = k)
 
+    def initialize_network_blip(self):
+        """
+        - momentum 0.99
+        - SGD instead of Adam
+        - self.lr_scheduler = None because we do poly_lr
+        - deep supervision = True
+        - i am sure I forgot something here
+
+        Known issue: forgot to set neg_slope=0 in InitWeights_He; should not make a difference though
+        :return:
+        """
+        if self.threeD:
+            conv_op = Conv3d_Q
+            dropout_op = nn.Dropout3d
+            norm_op = nn.InstanceNorm3d
+
+        else:
+            conv_op = Conv2d_Q
+            dropout_op = nn.Dropout2d
+            norm_op = nn.InstanceNorm2d
+
+        norm_op_kwargs = {'eps': 1e-5, 'affine': True}
+        dropout_op_kwargs = {'p': 0, 'inplace': True}
+        net_nonlin = nn.LeakyReLU
+        net_nonlin_kwargs = {'negative_slope': 1e-2, 'inplace': True}
+        self.network = Generic_UNet(self.num_input_channels, self.base_num_features, self.num_classes,
+                                    len(self.net_num_pool_op_kernel_sizes),
+                                    self.conv_per_stage, 2, conv_op, norm_op, norm_op_kwargs, dropout_op,
+                                    dropout_op_kwargs,
+                                    net_nonlin, net_nonlin_kwargs, True, False, lambda x: x, InitWeights_He(1e-2),
+                                    self.net_num_pool_op_kernel_sizes, self.net_conv_kernel_sizes, False, True, True)
+        if torch.cuda.is_available():
+            self.network.cuda()
+        self.network.inference_apply_nonlin = softmax_helper
+
+    def store_current_state_dict(self):
+        self.print_to_log_file('Storing the current state dict in case it gets overwritten')
+        self.current_state_dict = self.network.state_dict()
+
+    def recover_current_state_dict(self):
+        self.print_to_log_file('Recovering the current state dict')
+        self.network.load_state_dict(self.current_state_dict)
+
+    def update_blip_params(self, task):
+        ''':cvar task: start from 0'''
+        fisher_dict = self.update_fisher_dict(self.tr_gen)
+        del self.fisher_dict
+
+        for name, m in self.network.named_modules():
+            if isinstance(m, (Conv2d_Q, Conv3d_Q)) and not name.startswith('seg_outputs'):
+                m.Fisher_w.add_(fisher_dict[name+'.weight'].data)
+                m.Fisher_b.add_(fisher_dict[name+ '.bias'].data)
+
+                # update bits according to information gain
+                m.update_bits(task=task, C=0.5 / math.log(2))
+                # do quantization
+                m.sync_weight()
+                # update Fisher in the buffer
+                m.update_fisher(task=task)
 
     def sample_feature(self,data_generator):
         data_dict = next(data_generator)
@@ -683,7 +750,6 @@ class nnUNetTrainerV2_Continual_MultiDatasets(nnUNetTrainerV2):
             sampled_features = np.reshape(np.transpose(sampled_features,(0,2,1)),(-1,C))
             sampled_features_dict[key] = sampled_features
         return sampled_features_dict
-
 
     def plot_cluster(self, x, y, level = None):
         # choose a color palette with seaborn

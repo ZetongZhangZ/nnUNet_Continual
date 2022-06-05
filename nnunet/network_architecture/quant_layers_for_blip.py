@@ -123,6 +123,11 @@ class Conv3d_Q(nn.Conv3d):
         super(Conv3d_Q, self).__init__(in_channels, out_channels, kernel_size, stride,
             padding, dilation, groups, bias)
         self.max_bit = max_bit
+
+        if isinstance(kernel_size,(tuple,list)):
+            kernel_size = kernel_size[0] #assume the kernel size is the same across axes
+            # print(kernel_size)
+
         self.bound = 6.0*math.sqrt(1.0/(in_channels*kernel_size*kernel_size*kernel_size))
         # dealing each layer's prior separately
         self.F_prior = F_prior*in_channels*kernel_size*kernel_size*kernel_size

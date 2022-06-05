@@ -91,7 +91,6 @@ def main():
     parser.add_argument('--lambda_ewc', type=float, default=0.1,
                         help='lambda_ewc')
     parser.add_argument('--fisher_storage',choices = ['each','single'],help='the method to store fisher information')
-
     parser.add_argument('--sample_dataset', default = False, action = 'store_true',
                         help = 'use only part of image of each dataset')
     parser.add_argument('--num_epochs',default = 1000, type = int, help = 'number of epochs for each dataset')

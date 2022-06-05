@@ -34,6 +34,7 @@ from torch import nn
 from torch.cuda.amp import autocast
 from nnunet.training.learning_rate.poly_lr import poly_lr
 from batchgenerators.utilities.file_and_folder_operations import *
+from nnunet.network_architecture.quant_layers_for_blip import Conv2d_Q,Conv3d_Q
 
 
 class nnUNetTrainerV2(nnUNetTrainer):
@@ -276,7 +277,12 @@ class nnUNetTrainerV2(nnUNetTrainer):
                 l.backward()
                 torch.nn.utils.clip_grad_norm_(self.network.parameters(), 12)
                 self.optimizer.step()
-
+        
+        if hasattr(self, 'method') and self.method == 'BLIP' and do_backprop:
+            for name,module in self.network.named_modules():
+                if isinstance(module,(Conv3d_Q,Conv2d_Q)) and not name.startswith('seg_outputs'):
+                    module.clipping()
+            
         if run_online_evaluation:
             self.run_online_evaluation(output, target)
 

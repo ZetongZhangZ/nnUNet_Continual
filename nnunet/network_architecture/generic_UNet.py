@@ -21,7 +21,7 @@ import numpy as np
 from nnunet.network_architecture.initialization import InitWeights_He
 from nnunet.network_architecture.neural_network import SegmentationNetwork
 import torch.nn.functional
-
+from nnunet.network_architecture.quant_layers_for_blip import Conv3d_Q,Conv2d_Q
 
 class ConvDropoutNormNonlin(nn.Module):
     """
@@ -190,7 +190,7 @@ class Generic_UNet(SegmentationNetwork):
                  conv_kernel_sizes=None,
                  upscale_logits=False, convolutional_pooling=False, convolutional_upsampling=False,
                  max_num_features=None, basic_block=ConvDropoutNormNonlin,
-                 seg_output_use_bias=False):
+                 seg_output_use_bias=False,max_bits_blip = None):
         """
         basically more flexible than v1, architecture is the same
 
@@ -226,7 +226,7 @@ class Generic_UNet(SegmentationNetwork):
         self._deep_supervision = deep_supervision
         self.do_ds = deep_supervision
 
-        if conv_op == nn.Conv2d:
+        if conv_op == nn.Conv2d or issubclass(conv_op,nn.Conv2d):
             upsample_mode = 'bilinear'
             pool_op = nn.MaxPool2d
             transpconv = nn.ConvTranspose2d
@@ -234,7 +234,7 @@ class Generic_UNet(SegmentationNetwork):
                 pool_op_kernel_sizes = [(2, 2)] * num_pool
             if conv_kernel_sizes is None:
                 conv_kernel_sizes = [(3, 3)] * (num_pool + 1)
-        elif conv_op == nn.Conv3d:
+        elif conv_op == nn.Conv3d or issubclass(conv_op,nn.Conv3d):
             upsample_mode = 'trilinear'
             pool_op = nn.MaxPool3d
             transpconv = nn.ConvTranspose3d
@@ -466,3 +466,12 @@ class Generic_UNet(SegmentationNetwork):
             x = self.conv_blocks_localization[u](x)
             out[x.size(1)] = x
         return out
+
+if __name__ == '__main__':
+
+    model = Generic_UNet(4,32,2,5,6,conv_op=Conv3d_Q)
+    # for name,m in model.named_modules():
+    #     if isinstance(m,Conv3d_Q):
+    #         print(name)
+    for key in model.state_dict():
+        print(key)

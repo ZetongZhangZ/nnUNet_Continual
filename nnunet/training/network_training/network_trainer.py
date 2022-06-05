@@ -551,6 +551,9 @@ class NetworkTrainer(object):
             if self.save_final_checkpoint:
                 if hasattr(self,'method') and self.method == 'EWC':
                     self.update_fisher_dict(self.tr_gen)
+                if hasattr(self, 'method') and self.method == 'BLIP':
+                    task_id = len(list(self.previous_task_dict.keys()))
+                    self.update_blip_params(task_id)
 
         if hasattr(self,'episode'):
             if self.save_final_checkpoint: self.save_checkpoint(
@@ -650,12 +653,20 @@ class NetworkTrainer(object):
                     if self.save_best_checkpoint and self.epoch > (self.max_num_epochs)/4:
                         if hasattr(self, 'method') and self.method == 'EWC':
                             self.update_fisher_dict(self.tr_gen)
+                        if hasattr(self, 'method') and self.method == 'BLIP':
+                            task_id = len(list(self.previous_task_dict.keys()))
+                            self.store_current_state_dict()
+                            self.update_blip_params(task_id)
 
                 if hasattr(self,'episode'):
                         self.save_checkpoint(join(self.output_folder, f"model_best_episode{self.episode}.model"))
                 else:
                     if self.save_best_checkpoint:
                         self.save_checkpoint(join(self.output_folder, "model_best.model"))
+
+                if self.save_best_checkpoint and self.epoch > (self.max_num_epochs) / 4:
+                    if hasattr(self, 'method') and self.method == 'BLIP':
+                        self.recover_current_state_dict()
 
             # Now see if the moving average of the train loss has improved. If yes then reset patience, else
             # increase patience
