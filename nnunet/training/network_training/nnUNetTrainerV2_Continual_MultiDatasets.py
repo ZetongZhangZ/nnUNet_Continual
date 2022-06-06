@@ -75,6 +75,8 @@ class nnUNetTrainerV2_Continual_MultiDatasets(nnUNetTrainerV2):
         # EWC related
         self.lambda_ewc = args.lambda_ewc
         self.fisher_storage = args.fisher_storage
+        # BLIP related
+        self.fisher_prior = args.fisher_prior
 
 
     def initialize(self, training=True, force_load_plans=False):

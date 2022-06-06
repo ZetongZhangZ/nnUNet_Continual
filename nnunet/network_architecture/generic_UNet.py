@@ -190,7 +190,7 @@ class Generic_UNet(SegmentationNetwork):
                  conv_kernel_sizes=None,
                  upscale_logits=False, convolutional_pooling=False, convolutional_upsampling=False,
                  max_num_features=None, basic_block=ConvDropoutNormNonlin,
-                 seg_output_use_bias=False):
+                 seg_output_use_bias=False,fisher_prior = 1e-18):
         """
         basically more flexible than v1, architecture is the same
 
@@ -244,6 +244,9 @@ class Generic_UNet(SegmentationNetwork):
                 conv_kernel_sizes = [(3, 3, 3)] * (num_pool + 1)
         else:
             raise ValueError("unknown convolution dimensionality, conv op: %s" % str(conv_op))
+
+        if conv_op == Conv2d_Q or conv_op == Conv3d_Q:
+            self.conv_kwargs['F_prior'] = fisher_prior
 
         self.input_shape_must_be_divisible_by = np.prod(pool_op_kernel_sizes, 0, dtype=np.int64)
         self.pool_op_kernel_sizes = pool_op_kernel_sizes
