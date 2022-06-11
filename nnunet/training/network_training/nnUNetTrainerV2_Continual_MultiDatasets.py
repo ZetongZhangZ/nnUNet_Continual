@@ -400,7 +400,7 @@ class nnUNetTrainerV2_Continual_MultiDatasets(nnUNetTrainerV2):
 
                 assert len(scaled_grad_params) == self.batch_size
                 inv_scale = 1. / self.amp_grad_scaler.get_scale()
-                square_grad_params = [sum((d*inv_scale)**2 if d is not None else torch.tensor(0.) for d in param_ls)/self.batch_size
+                square_grad_params = [sum(((d*inv_scale).cpu())**2 if d is not None else torch.tensor(0.) for d in param_ls)/self.batch_size
                                     for param_ls in zip(*scaled_grad_params)]
                 # self.amp_grad_scaler.update()
 
@@ -413,8 +413,12 @@ class nnUNetTrainerV2_Continual_MultiDatasets(nnUNetTrainerV2):
                                                    allow_unused=True,retain_graph = True)
                                for p in log_prob]
                 square_grad_params = [
-                    sum(d ** 2 if d is not None else torch.tensor(0.) for d in param_ls) / self.batch_size
+                    sum(d.cpu() ** 2 if d is not None else torch.tensor(0.) for d in param_ls) / self.batch_size
                     for param_ls in zip(*grad_params)]
+
+            del target
+            del log_prob
+            del output
 
             if not len(square_grad_params_list):
                 square_grad_params_list.extend(square_grad_params)
@@ -692,9 +696,12 @@ class nnUNetTrainerV2_Continual_MultiDatasets(nnUNetTrainerV2):
                                     self.conv_per_stage, 2, conv_op, norm_op, norm_op_kwargs, dropout_op,
                                     dropout_op_kwargs,
                                     net_nonlin, net_nonlin_kwargs, True, False, lambda x: x, InitWeights_He(1e-2),
-                                    self.net_num_pool_op_kernel_sizes, self.net_conv_kernel_sizes, False, True, True)
+                                    self.net_num_pool_op_kernel_sizes, self.net_conv_kernel_sizes, False, True, True,
+                                    fisher_prior=self.fisher_prior)
         if torch.cuda.is_available():
             self.network.cuda()
+
+        print(self.network.state_dict().keys())
         self.network.inference_apply_nonlin = softmax_helper
 
     def store_current_state_dict(self):
@@ -712,8 +719,8 @@ class nnUNetTrainerV2_Continual_MultiDatasets(nnUNetTrainerV2):
 
         for name, m in self.network.named_modules():
             if isinstance(m, (Conv2d_Q, Conv3d_Q)) and not name.startswith('seg_outputs'):
-                m.Fisher_w.add_(fisher_dict[name+'.weight'].data)
-                m.Fisher_b.add_(fisher_dict[name+ '.bias'].data)
+                m.Fisher_w.add_(fisher_dict[name+'.weight'].cuda().data)
+                m.Fisher_b.add_(fisher_dict[name+ '.bias'].cuda().data)
 
                 # update bits according to information gain
                 m.update_bits(task=task, C=0.5 / math.log(2))
@@ -721,6 +728,7 @@ class nnUNetTrainerV2_Continual_MultiDatasets(nnUNetTrainerV2):
                 m.sync_weight()
                 # update Fisher in the buffer
                 m.update_fisher(task=task)
+        del fisher_dict
 
     def sample_feature(self,data_generator):
         data_dict = next(data_generator)

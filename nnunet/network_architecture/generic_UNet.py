@@ -21,7 +21,7 @@ import numpy as np
 from nnunet.network_architecture.initialization import InitWeights_He
 from nnunet.network_architecture.neural_network import SegmentationNetwork
 import torch.nn.functional
-from nnunet.network_architecture.quant_layers_for_blip import Conv3d_Q,Conv2d_Q
+from nnunet.network_architecture.quant_layers_for_blip import Conv3d_Q,Conv2d_Q,ConvTranspose3d_Q
 
 class ConvDropoutNormNonlin(nn.Module):
     """
@@ -143,7 +143,7 @@ class StackedConvLayers(nn.Module):
 
 
 def print_module_training_status(module):
-    if isinstance(module, nn.Conv2d) or isinstance(module, nn.Conv3d) or isinstance(module, nn.Dropout3d) or \
+    if issubclass(module, nn.Conv2d) or issubclass(module, nn.Conv3d) or isinstance(module, nn.Dropout3d) or \
             isinstance(module, nn.Dropout2d) or isinstance(module, nn.Dropout) or isinstance(module, nn.InstanceNorm3d) \
             or isinstance(module, nn.InstanceNorm2d) or isinstance(module, nn.InstanceNorm1d) \
             or isinstance(module, nn.BatchNorm2d) or isinstance(module, nn.BatchNorm3d) or isinstance(module,
@@ -229,7 +229,7 @@ class Generic_UNet(SegmentationNetwork):
         if conv_op == nn.Conv2d or issubclass(conv_op,nn.Conv2d):
             upsample_mode = 'bilinear'
             pool_op = nn.MaxPool2d
-            transpconv = nn.ConvTranspose2d
+            transpconv = nn.ConvTranspose2d # not implemented
             if pool_op_kernel_sizes is None:
                 pool_op_kernel_sizes = [(2, 2)] * num_pool
             if conv_kernel_sizes is None:
@@ -237,7 +237,7 @@ class Generic_UNet(SegmentationNetwork):
         elif conv_op == nn.Conv3d or issubclass(conv_op,nn.Conv3d):
             upsample_mode = 'trilinear'
             pool_op = nn.MaxPool3d
-            transpconv = nn.ConvTranspose3d
+            transpconv = nn.ConvTranspose3d if conv_op!=Conv3d_Q else ConvTranspose3d_Q
             if pool_op_kernel_sizes is None:
                 pool_op_kernel_sizes = [(2, 2, 2)] * num_pool
             if conv_kernel_sizes is None:
@@ -257,7 +257,7 @@ class Generic_UNet(SegmentationNetwork):
             self.conv_pad_sizes.append([1 if i == 3 else 0 for i in krnl])
 
         if max_num_features is None:
-            if self.conv_op == nn.Conv3d:
+            if self.conv_op == nn.Conv3d or self.conv_op == Conv3d_Q:
                 self.max_num_features = self.MAX_NUM_FILTERS_3D
             else:
                 self.max_num_features = self.MAX_FILTERS_2D
@@ -343,8 +343,12 @@ class Generic_UNet(SegmentationNetwork):
             if not self.convolutional_upsampling:
                 self.tu.append(Upsample(scale_factor=pool_op_kernel_sizes[-(u + 1)], mode=upsample_mode))
             else:
-                self.tu.append(transpconv(nfeatures_from_down, nfeatures_from_skip, pool_op_kernel_sizes[-(u + 1)],
-                                          pool_op_kernel_sizes[-(u + 1)], bias=False))
+                if transpconv == ConvTranspose3d_Q:
+                    self.tu.append(transpconv(nfeatures_from_down, nfeatures_from_skip, pool_op_kernel_sizes[-(u + 1)],
+                                              pool_op_kernel_sizes[-(u + 1)], bias=False,F_prior=fisher_prior))
+                else:
+                    self.tu.append(transpconv(nfeatures_from_down, nfeatures_from_skip, pool_op_kernel_sizes[-(u + 1)],
+                                              pool_op_kernel_sizes[-(u + 1)], bias=False))
 
             self.conv_kwargs['kernel_size'] = self.conv_kernel_sizes[- (u + 1)]
             self.conv_kwargs['padding'] = self.conv_pad_sizes[- (u + 1)]
@@ -358,8 +362,12 @@ class Generic_UNet(SegmentationNetwork):
             ))
 
         for ds in range(len(self.conv_blocks_localization)):
-            self.seg_outputs.append(conv_op(self.conv_blocks_localization[ds][-1].output_channels, num_classes,
-                                            1, 1, 0, 1, 1, seg_output_use_bias))
+            if conv_op == Conv2d_Q or conv_op == Conv3d_Q:
+                self.seg_outputs.append(conv_op(self.conv_blocks_localization[ds][-1].output_channels, num_classes,
+                                                1, 1, 0, 1, 1, seg_output_use_bias,F_prior = fisher_prior))
+            else:
+                self.seg_outputs.append(conv_op(self.conv_blocks_localization[ds][-1].output_channels, num_classes,
+                                                1, 1, 0, 1, 1, seg_output_use_bias))
 
         self.upscale_logits_ops = []
         cum_upsample = np.cumprod(np.vstack(pool_op_kernel_sizes), axis=0)[::-1]
