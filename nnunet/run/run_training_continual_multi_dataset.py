@@ -78,6 +78,7 @@ def main():
                              'file, for example model_final_checkpoint.model). Will only be used when actually training. '
                              'Optional. Beta. Use with caution.')
 
+    ## interactive learning related (not used)
     parser.add_argument('--num_samples', type=int, default=3,
                         help='the number of image,user interaction pairs')
     parser.add_argument('--slice_ratio', type=float, default=0.1,
@@ -90,7 +91,8 @@ def main():
                         help='method for continual learning')
     parser.add_argument('--lambda_ewc', type=float, default=0.1,
                         help='lambda_ewc')
-    parser.add_argument('--fisher_storage',choices = ['each','single'],help='the method to store fisher information')
+    parser.add_argument('--fisher_storage',choices = ['each','single'],
+                        help='the method to store fisher information in EWC')
     parser.add_argument('--fisher_prior', type=float, default=1e-18,
                         help='fisher prior for first stage in BLIP')
 
