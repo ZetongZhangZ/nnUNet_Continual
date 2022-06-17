@@ -68,6 +68,10 @@ accordingly, based on [this work](https://arxiv.org/abs/1603.04042). Since we do
 in the end, some related arguments are not useless and not tested. Instead, you should set the flag `--nointeract`
 to be true to avoid other settings.
 
+**Highlight:** The network architecture planned for each dataset may be different from each other. In our work,
+we manually rewrite the plan file for task 3 and task 135 to make the convolution and pooling plan 
+uniform with other tasks. You have to do it if you want to reproduce our results or encounter the same problem.
+
 After running these scripts, you should be able to find all the preprocessed images in your preset precessing data path.
 
 ## 4. Continual Learning
